@@ -1,4 +1,5 @@
 name: Watch Gravitino good first issues
+
 on:
   schedule:
     - cron: "*/10 * * * *"   # 10분마다
@@ -10,42 +11,59 @@ jobs:
     env:
       OWNER: apache
       REPO: gravitino
-      LABELS: good first issue
+      LABELS: good first issue            # 감시 라벨
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      SINCE_MINUTES: "15"
+      SINCE_MINUTES: "60"                 # 최근 60분 내 업데이트만 확인(테스트 시 1440으로 키워도 OK)
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - name: Fetch issues updated recently
         id: fetch
         run: |
           SINCE_TS=$(date -u -d "@$(( $(date -u +%s) - ${SINCE_MINUTES}*60 ))" +"%Y-%m-%dT%H:%M:%SZ")
-          Q="repo:${OWNER}/${REPO}+is:issue+is:open+label:%22${LABELS// /%20}%22+updated:>=$SINCE_TS"
+          # label:"good first issue" 를 URL 인코딩하여 쿼리에 포함
+          Q="repo:${OWNER}/${REPO}+is:issue+is:open+label:%22${LABELS// /%20}%22+updated:%3E=${SINCE_TS}"
           curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/search/issues?q=${Q}&sort=updated&order=desc&per_page=50" > result.json
+
       - name: Build messages
         id: build
         run: |
-          python - << 'PY'
+          python - << 'PY' > msgs.txt
           import json
           data=json.load(open("result.json"))
-          items=[]
-          for it in data.get("items",[]):
-              title=it["title"]; url=it["html_url"]
-              labels=[l["name"] for l in it.get("labels",[])]
-              items.append(f"[apache/gravitino] {title}\nlabels: {', '.join(labels)}\n{url}")
-          print("\n---\n".join(items))
+          out=[]
+          for it in data.get("items", []):
+              # PR 제외(검색 API는 PR도 섞일 수 있음)
+              if "pull_request" in it:
+                  continue
+              title=it.get("title","")
+              url=it.get("html_url","")
+              labels=[l.get("name","") for l in it.get("labels",[])]
+              out.append(f"[apache/gravitino] {title}\nlabels: {', '.join(labels)}\n{url}")
+          print("\n---\n".join(out))
           PY
+          # 다음 스텝에서 쓸 출력값(messages)으로 등록
+          echo "messages<<EOF" >> "$GITHUB_OUTPUT"
+          cat msgs.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Send to Slack
-        if: env.SLACK_WEBHOOK_URL != ''
+        if: env.SLACK_WEBHOOK_URL != '' && steps.build.outputs.messages != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
         run: |
-          MSGS="$(cat <<'EOF'
-${{ steps.build.outputs }}
-EOF
-)"
-          if [ -n "$MSGS" ]; then
-            printf '%s' "$MSGS" | awk 'BEGIN{RS="---"} {gsub(/^\n+|\n+$/,""); if(length($0)>0) print}' | \
-            while IFS= read -r block; do
-              jq -n --arg t "$block" '{text:$t}' \
-              | curl -s -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL" > /dev/null
-            done
-          fi
+          # Python으로 안전하게 JSON 인코딩하여 Slack으로 전송
+          python - << 'PY'
+          import os, json, urllib.request
+          url=os.environ["SLACK_WEBHOOK_URL"]
+          data="""${{ steps.build.outputs.messages }}""".strip()
+          if not data:
+              raise SystemExit(0)
+          blocks=[s.strip() for s in data.split("\\n---\\n") if s.strip()]
+          for b in blocks:
+              payload=json.dumps({"text": b}).encode("utf-8")
+              req=urllib.request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req) as resp:
+                  resp.read()
+          PY
