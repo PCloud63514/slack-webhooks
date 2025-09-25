@@ -1,0 +1,51 @@
+name: Watch Gravitino good first issues
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      OWNER: apache
+      REPO: gravitino
+      LABELS: good first issue
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SINCE_MINUTES: "15"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Fetch issues updated recently
+        id: fetch
+        run: |
+          SINCE_TS=$(date -u -d "@$(( $(date -u +%s) - ${SINCE_MINUTES}*60 ))" +"%Y-%m-%dT%H:%M:%SZ")
+          Q="repo:${OWNER}/${REPO}+is:issue+is:open+label:%22${LABELS// /%20}%22+updated:>=$SINCE_TS"
+          curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/search/issues?q=${Q}&sort=updated&order=desc&per_page=50" > result.json
+      - name: Build messages
+        id: build
+        run: |
+          python - << 'PY'
+          import json
+          data=json.load(open("result.json"))
+          items=[]
+          for it in data.get("items",[]):
+              title=it["title"]; url=it["html_url"]
+              labels=[l["name"] for l in it.get("labels",[])]
+              items.append(f"[apache/gravitino] {title}\nlabels: {', '.join(labels)}\n{url}")
+          print("\n---\n".join(items))
+          PY
+      - name: Send to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        run: |
+          MSGS="$(cat <<'EOF'
+${{ steps.build.outputs }}
+EOF
+)"
+          if [ -n "$MSGS" ]; then
+            printf '%s' "$MSGS" | awk 'BEGIN{RS="---"} {gsub(/^\n+|\n+$/,""); if(length($0)>0) print}' | \
+            while IFS= read -r block; do
+              jq -n --arg t "$block" '{text:$t}' \
+              | curl -s -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL" > /dev/null
+            done
+          fi
