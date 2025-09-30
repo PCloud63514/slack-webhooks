@@ -13,7 +13,7 @@ jobs:
       REPO: gravitino
       LABELS: good first issue            # 감시 라벨 (쉼표로 확장 가능: good first issue,help wanted)
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      SINCE_MINUTES: "60"                 # 최근 60분 내 '생성된' 이슈만 확인 (테스트 시 1440으로 조정)
+      SINCE_MINUTES: "20"                 # 최근 60분 내 '생성된' 이슈만 확인 (테스트 시 1440으로 조정)
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
